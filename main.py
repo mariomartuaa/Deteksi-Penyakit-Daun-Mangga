@@ -2,6 +2,16 @@ import streamlit as st
 from ultralytics import YOLO
 from PIL import Image
 import io
+import sqlite3
+
+conn = sqlite3.connect('database.db')
+c = conn.cursor()
+
+c.execute('''CREATE TABLE IF NOT EXISTS images
+             (id INTEGER PRIMARY KEY AUTOINCREMENT, 
+              tab TEXT, 
+              image BLOB)''')
+conn.commit()
 
 buffer = io.BytesIO()
 buffer2 = io.BytesIO()
@@ -9,49 +19,68 @@ buffer2 = io.BytesIO()
 model = YOLO("best.pt")
 
 def prediction(image, conf):
-    result = model.predict(image, conf = conf)
-    boxes = result[0].boxes
+    result = model.predict(image, conf=conf)
     res_plotted = result[0].plot()[:, :, ::-1]
     return res_plotted
 
-st.title('Deteksi Penyakit Pada Daun Mangga')
+def delete_image(image_id):
+    c.execute("DELETE FROM images WHERE id=?", (image_id,))
+    conn.commit()
+    st.experimental_rerun()
 
-values = st.slider(
-    label='Pilih Confidence',
-    value=(1.0))
-st.write('Confidence', values)
+def main_page():
+    st.title('Deteksi Penyakit Pada Daun Mangga')
+    values = st.slider('Pilih Confidence', value=1.0)
+    st.write('Confidence', values)
 
-image = st.camera_input('Take a picture')
-if image:
-    image = Image.open(image)
-    pred = prediction(image, values)
-    st.image(pred)
-    
-    im = Image.fromarray(pred)
-    im.save(buffer, format="PNG")
-    
-    st.download_button(
-        key = 1,
-        label="Download",
-        data= buffer,
-        file_name="Deteksi Penyakit.png",
-        mime="image/png",
-    )
+    tab1, tab2 = st.tabs(['Kamera', 'Upload'])
 
-image2 = st.file_uploader('Upload', type = ['jpg', 'jpeg', 'png'])
-if image2:
-    image2 = Image.open(image2)
-    pred = prediction(image2, values)
-    st.image(pred)
-    
-    im = Image.fromarray(pred)
-    im.save(buffer2, format="PNG")
-    
-    st.download_button(
-        key = 2,
-        label="Download",
-        data= buffer2,
-        file_name="Deteksi Penyakit.png",
-        mime="image/png",
-    )
-    
+    with tab1:
+        image = st.camera_input('Ambil Foto')
+        if image:
+            image = Image.open(image)
+            pred = prediction(image, values)
+            im = Image.fromarray(pred)
+            im.save(buffer, format="PNG")
+            img_bytes = buffer.getvalue()
+            c.execute("INSERT INTO images (tab, image) VALUES (?, ?)", ('camera', img_bytes))
+            conn.commit()
+
+    with tab2:
+        image2 = st.file_uploader('Upload', type=['jpg', 'jpeg', 'png'])
+        if image2:
+            image2 = Image.open(image2)
+            pred = prediction(image2, values)
+            im = Image.fromarray(pred)
+            im.save(buffer2, format="PNG")
+            img_bytes = buffer2.getvalue()
+            c.execute("INSERT INTO images (tab, image) VALUES (?, ?)", ('upload', img_bytes))
+            conn.commit()
+
+def view_results_page():
+    st.title('Hasil Deteksi')
+    images = c.execute("SELECT id, image FROM images ORDER BY id DESC").fetchall()
+    for image_id, img in images:
+        st.image(img, caption=f'Hasil Deteksi #{image_id}')
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            st.download_button("Download", img, file_name=f"Deteksi_Penyakit_{image_id}.png", mime="image/png")
+        with col2:
+            if st.button("Delete", key=f"delete_{image_id}"):
+                delete_image(image_id)
+
+st.sidebar.title('Navigasi')
+if st.sidebar.button('Home'):
+    st.session_state['page'] = 'Home'
+if st.sidebar.button('Hasil Deteksi'):
+    st.session_state['page'] = 'Hasil Deteksi'
+
+if 'page' not in st.session_state:
+    st.session_state['page'] = 'Home'
+
+if st.session_state['page'] == 'Home':
+    main_page()
+elif st.session_state['page'] == 'Hasil Deteksi':
+    view_results_page()
+
+conn.close()
